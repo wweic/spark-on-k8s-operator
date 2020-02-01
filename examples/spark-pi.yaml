@@ -16,13 +16,13 @@
 apiVersion: "sparkoperator.k8s.io/v1beta2"
 kind: SparkApplication
 metadata:
-  name: spark-pi
+  name: spark-pi2
   namespace: default
 spec:
   type: Scala
   mode: cluster
   image: "gcr.io/spark-operator/spark:v2.4.4"
-  imagePullPolicy: Always
+  imagePullPolicy: IfNotPresent
   mainClass: org.apache.spark.examples.SparkPi
   mainApplicationFile: "local:///opt/spark/examples/jars/spark-examples_2.11-2.4.4.jar"
   sparkVersion: "2.4.4"
@@ -33,6 +33,7 @@ spec:
       hostPath:
         path: "/tmp"
         type: Directory
+  sparkConfigMap: "wweic-test-xml"
   driver:
     cores: 1
     coreLimit: "1200m"

@@ -49,6 +49,8 @@ func patchSparkPod(pod *corev1.Pod, app *v1beta2.SparkApplication) []patchOperat
 		patchOps = append(patchOps, addOwnerReference(pod, app))
 	}
 
+	glog.V(2).Infof("Pod information %v", pod)
+
 	patchOps = append(patchOps, addVolumes(pod, app)...)
 	patchOps = append(patchOps, addGeneralConfigMaps(pod, app)...)
 	patchOps = append(patchOps, addSparkConfigMap(pod, app)...)
@@ -150,7 +152,7 @@ func addVolume(pod *corev1.Pod, volume corev1.Volume) patchOperation {
 	return patchOperation{Op: "add", Path: path, Value: value}
 }
 
-func addVolumeMount(pod *corev1.Pod, mount corev1.VolumeMount) patchOperation {
+func findMainContainerIndex(pod *corev1.Pod) int {
 	i := 0
 	// Find the driver or executor container in the pod.
 	for ; i < len(pod.Spec.Containers); i++ {
@@ -159,6 +161,23 @@ func addVolumeMount(pod *corev1.Pod, mount corev1.VolumeMount) patchOperation {
 			break
 		}
 	}
+	return i
+}
+
+func findVolumeMountIndex(container *corev1.Container) int {
+	i := 0
+	// Find the driver or executor container in the pod.
+	for ; i < len(container.VolumeMounts); i++ {
+		glog.V(2).Infof("Processing mount %v(name %v)", container.VolumeMounts[i], container.VolumeMounts[i].Name)
+		if container.VolumeMounts[i].Name == "spark-conf-volume" {
+			return i
+		}
+	}
+	return -1
+}
+
+func addVolumeMount(pod *corev1.Pod, mount corev1.VolumeMount) patchOperation {
+	i := findMainContainerIndex(pod)
 
 	path := fmt.Sprintf("/spec/containers/%d/volumeMounts", i)
 	var value interface{}
@@ -241,9 +260,30 @@ func addSparkConfigMap(pod *corev1.Pod, app *v1beta2.SparkApplication) []patchOp
 	var patchOps []patchOperation
 	sparkConfigMapName := app.Spec.SparkConfigMap
 	if sparkConfigMapName != nil {
+		// TODO: Patch existing spark configmap to use subpath.
+		i := findMainContainerIndex(pod)
+		glog.V(2).Infof("Existing spark configmaps %v", pod.Spec.Containers[i].VolumeMounts)
+		mount_index := findVolumeMountIndex(&pod.Spec.Containers[i])
+
+		if mount_index >= 0 {
+			glog.V(2).Infof("Replacing VolumeMount in %v", mount_index)
+
+			mnt := pod.Spec.Containers[i].VolumeMounts[mount_index]
+			properties_file := "spark.properties"
+			mnt.MountPath = mnt.MountPath + "/" + properties_file
+			mnt.SubPath = properties_file
+
+			replace_mount_path := fmt.Sprintf("/spec/containers/%d/volumeMounts/%d", i, mount_index)
+
+			glog.V(2).Infof("New VolumeMount %v", replace_mount_path)
+
+			patchOps = append(patchOps, patchOperation{Op: "replace", Path: replace_mount_path, Value: mnt})
+		}
+
 		patchOps = append(patchOps, addConfigMapVolume(pod, *sparkConfigMapName, config.SparkConfigMapVolumeName))
-		patchOps = append(patchOps, addConfigMapVolumeMount(pod, config.SparkConfigMapVolumeName,
-			config.DefaultSparkConfDir))
+		// TODO: Use subpath from user provided options. Might be a loop since there could be multiple files in configmap
+		patchOps = append(patchOps, addConfigMapVolumeMountSubpath(pod, config.SparkConfigMapVolumeName,
+			"/opt/spark/conf/hive-site.xml", "hive-site.xml"))
 		patchOps = append(patchOps, addEnvironmentVariable(pod, config.SparkConfDirEnvVar, config.DefaultSparkConfDir))
 	}
 	return patchOps
@@ -324,6 +364,16 @@ func addConfigMapVolumeMount(pod *corev1.Pod, configMapVolumeName string, mountP
 		Name:      configMapVolumeName,
 		ReadOnly:  true,
 		MountPath: mountPath,
+	}
+	return addVolumeMount(pod, mount)
+}
+
+func addConfigMapVolumeMountSubpath(pod *corev1.Pod, configMapVolumeName string, mountPath string, subpath string) patchOperation {
+	mount := corev1.VolumeMount{
+		Name:      configMapVolumeName,
+		ReadOnly:  true,
+		MountPath: mountPath,
+		SubPath:   subpath,
 	}
 	return addVolumeMount(pod, mount)
 }
